@@ -13,3 +13,13 @@ benchmarks/audio/
 benchmarks/models/
 # Benchmark manifests ARE committed (small text, contain ground-truth refs)
 !benchmarks/*_manifest.tsv
+/examples/wasm/dist/*
+!/examples/wasm/dist/parakeet.mjs
+!/examples/wasm/dist/parakeet.wasm
+/examples/wasm/dist-threaded/*
+!/examples/wasm/dist-threaded/parakeet.mjs
+!/examples/wasm/dist-threaded/parakeet.wasm
+/node_modules/
+/package.json
+/package-lock.json
+/a.out.*

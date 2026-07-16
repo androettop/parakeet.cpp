@@ -364,6 +364,43 @@ The LocalAI backend (in the LocalAI repo) dlopens `libparakeet.so` and uses thes
 
 ---
 
+## Browser / WebAssembly
+
+parakeet.cpp compiles to WebAssembly (Emscripten, ggml CPU backend), so ASR can run **entirely client-side** — the model and audio never leave the page, just like `whisper.cpp`'s WASM build. A small promise-based JS API wraps it:
+
+```js
+import { Parakeet } from './parakeet.js';
+
+const pk = await Parakeet.load('./dist/',
+  'https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/tdt_ctc-110m-q4_k.gguf');
+const { pcm, sampleRate } = await Parakeet.decodeAudio(await file.arrayBuffer());
+const text = pk.transcribe(pcm, sampleRate);           // plain transcript
+const doc  = pk.transcribeWithTimestamps(pcm, sampleRate); // + per-word timestamps
+pk.free();
+```
+
+The demos come in single-thread and multi-thread flavors (both prebuilt and committed, so you can just serve and open):
+
+- **`index.html`** / **`mic.html`** — single-thread: offline file transcription and live-microphone streaming. Run from any static host.
+- **`index-threaded.html`** / **`mic-threaded.html`** — multi-thread: the module runs in a Web Worker with a ggml pthread pool, so it uses multiple CPU cores *and* the browser UI never freezes. Needs cross-origin isolation (COOP/COEP), which `serve.py` provides.
+
+```sh
+python3 examples/wasm/serve.py        # http://localhost:8000  -> open any of the demos
+```
+
+To rebuild the WASM from source:
+
+```sh
+git submodule update --init --recursive
+source /path/to/emsdk/emsdk_env.sh            # Emscripten SDK on PATH
+scripts/build_wasm.sh                          # single-thread -> dist/
+PARAKEET_WASM_THREADS=4 scripts/build_wasm.sh  # multi-thread  -> dist-threaded/
+```
+
+Everything (demo pages, JS API, build script) lives in [`examples/wasm/`](examples/wasm/README.md).
+
+---
+
 ## Model coverage
 
 See `docs/parity.md` for the full coverage matrix. In short:
