@@ -364,6 +364,34 @@ The LocalAI backend (in the LocalAI repo) dlopens `libparakeet.so` and uses thes
 
 ---
 
+## Browser / WebAssembly
+
+parakeet.cpp compiles to WebAssembly (Emscripten, ggml CPU backend), so ASR can run **entirely client-side** — the model and audio never leave the page, just like `whisper.cpp`'s WASM build. A small promise-based JS API wraps it:
+
+```js
+import { Parakeet } from './parakeet.js';
+
+const pk = await Parakeet.load('./dist/',
+  'https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/tdt_ctc-110m-q4_k.gguf');
+const { pcm, sampleRate } = await Parakeet.decodeAudio(await file.arrayBuffer());
+const text = pk.transcribe(pcm, sampleRate);           // plain transcript
+const doc  = pk.transcribeWithTimestamps(pcm, sampleRate); // + per-word timestamps
+pk.free();
+```
+
+Build it and try the drag-and-drop demo:
+
+```sh
+git submodule update --init --recursive
+source /path/to/emsdk/emsdk_env.sh   # Emscripten SDK on PATH
+scripts/build_wasm.sh                 # -> examples/wasm/dist/parakeet.{mjs,wasm}
+python3 examples/wasm/serve.py        # http://localhost:8000
+```
+
+Everything (model, demo page, JS API, build script) lives in [`examples/wasm/`](examples/wasm/README.md).
+
+---
+
 ## Model coverage
 
 See `docs/parity.md` for the full coverage matrix. In short:

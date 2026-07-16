@@ -36,6 +36,13 @@ if [ ! -e "${ROOT}/third_party/ggml/CMakeLists.txt" ]; then
 fi
 
 echo ">> configuring (threads=${THREADS})"
+# For a pthreads build every translation unit (ggml, parakeet, the glue) must be
+# compiled with -pthread, not just the final link, so pass it as a global flag.
+PTHREAD_FLAGS=()
+if [ "${THREADS}" != "0" ]; then
+    PTHREAD_FLAGS=(-DCMAKE_C_FLAGS="-pthread" -DCMAKE_CXX_FLAGS="-pthread")
+fi
+
 emcmake cmake -S "${ROOT}" -B "${BUILD_DIR}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DPARAKEET_BUILD_WASM=ON \
@@ -46,7 +53,8 @@ emcmake cmake -S "${ROOT}" -B "${BUILD_DIR}" \
     -DGGML_NATIVE=OFF \
     -DGGML_LLAMAFILE=OFF \
     -DGGML_OPENMP=OFF \
-    -DGGML_WASM_SINGLE_FILE=OFF
+    -DGGML_WASM_SINGLE_FILE=OFF \
+    "${PTHREAD_FLAGS[@]}"
 
 echo ">> building"
 cmake --build "${BUILD_DIR}" -j"$(nproc 2>/dev/null || echo 4)" --target parakeet-wasm

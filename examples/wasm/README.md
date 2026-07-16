@@ -102,20 +102,26 @@ node examples/wasm/test_node.mjs path/to/model.gguf path/to/audio.wav
 
 ## Performance & threading
 
-The default build is **single-threaded** for maximum compatibility: it runs
-from any static host and from `file://`, with no special headers. On the small
-110M model, transcription runs several times faster than real time on a modern
-laptop.
+The default build is **single-threaded**, which is both the most compatible
+(runs from any static host and from `file://`, no special headers) and, in
+practice here, the fastest. On the small 110M model transcription runs faster
+than real time on a modern laptop (~1.3× real-time in a headless Chromium
+measurement on this repo's `speech.wav`).
 
-For a faster multi-threaded build, pass a pthread pool size:
+An experimental pthreads build is wired in behind `PARAKEET_WASM_THREADS=N`:
 
 ```sh
-PARAKEET_WASM_THREADS=4 scripts/build_wasm.sh
+PARAKEET_WASM_THREADS=8 scripts/build_wasm.sh
 ```
 
-pthreads use `SharedArrayBuffer`, which the browser only exposes on
-**cross-origin isolated** pages. Serve with the COOP/COEP headers (the included
-`serve.py` already sends them):
+It is **not currently recommended** — Emscripten's `-pthread` combined with
+`ALLOW_MEMORY_GROWTH` routes heap access through a slower path, and for
+parakeet's many small graph computes that overhead outweighed the parallelism
+in testing (it came out several times *slower* than single-threaded). Making it
+a real win needs a fixed (non-growable) memory build, which trades off support
+for the larger models. If you do use it, pthreads need `SharedArrayBuffer`,
+which the browser only exposes on **cross-origin isolated** pages — serve with
+the COOP/COEP headers (the included `serve.py` already sends them):
 
 ```
 Cross-Origin-Opener-Policy: same-origin
