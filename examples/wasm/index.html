@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>parakeet.cpp · WebAssembly demo</title>
+<style>
+  :root { color-scheme: light dark; --accent: #16a34a; --bg: #0b0f14; --card: #131b24;
+          --fg: #e6edf3; --muted: #8b98a5; --border: #223040; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f6f8fa; --card: #fff; --fg: #1f2328; --muted: #656d76; --border: #d0d7de; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: var(--bg); color: var(--fg); }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  h1 .cpp { color: var(--accent); }
+  p.sub { color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+          padding: 20px; margin-bottom: 18px; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  label.field { font-weight: 600; font-size: .85rem; color: var(--muted);
+                display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
+  input[type=text], select { width: 100%; padding: 9px 11px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--fg); font-size: 14px; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+    padding: 10px 18px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+  .status { font-size: .9rem; color: var(--muted); min-height: 1.4em; margin-top: 10px; }
+  .status.err { color: #f85149; }
+  #out { white-space: pre-wrap; word-break: break-word; font-size: 1.05rem; line-height: 1.6; }
+  #out:empty::before { content: "The transcript will appear here."; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: .85rem; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  .drop { border: 2px dashed var(--border); border-radius: 10px; padding: 22px; text-align: center;
+          color: var(--muted); cursor: pointer; transition: border-color .15s, background .15s; }
+  .drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  code { background: color-mix(in srgb, var(--muted) 18%, transparent); padding: 1px 5px; border-radius: 4px; }
+  .muted { color: var(--muted); font-size: .85rem; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>parakeet<span class="cpp">.cpp</span> · WebAssembly</h1>
+  <p class="sub">NVIDIA Parakeet speech recognition, running entirely in your browser. No server, no upload — audio and model never leave the page.</p>
+
+  <div class="card">
+    <label class="field" for="modelUrl">1 · Model (GGUF)</label>
+    <div class="row">
+      <input type="text" id="modelUrl" style="flex:1; min-width:240px"
+             value="https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/tdt_ctc-110m-q4_k.gguf" />
+      <button id="loadBtn">Load model</button>
+    </div>
+    <p class="muted" style="margin:8px 0 0">
+      Or drop a local <code>.gguf</code> here. Small English default:
+      <code>tdt_ctc-110m-q4_k</code> (~125&nbsp;MB). Other models:
+      <a href="https://huggingface.co/mudler/parakeet-cpp-gguf" target="_blank" rel="noopener">HuggingFace</a>.
+    </p>
+    <div class="drop" id="modelDrop" style="margin-top:12px">Drop a .gguf file to load a local model</div>
+    <div class="status" id="modelStatus">Not loaded.</div>
+  </div>
+
+  <div class="card">
+    <label class="field">2 · Audio</label>
+    <div class="drop" id="audioDrop">
+      Drop an audio file (WAV / MP3 / OGG / FLAC / …) or click to choose
+      <input type="file" id="audioInput" accept="audio/*" hidden />
+    </div>
+    <div class="row" style="margin-top:12px">
+      <label style="display:flex; align-items:center; gap:6px; font-size:.9rem">
+        <input type="checkbox" id="tsCheck" /> per-word timestamps
+      </label>
+      <div style="flex:1"></div>
+      <button id="transcribeBtn" disabled>Transcribe</button>
+    </div>
+    <div class="status" id="audioStatus"></div>
+  </div>
+
+  <div class="card">
+    <label class="field">Transcript</label>
+    <div id="out"></div>
+    <div id="wordsWrap" style="display:none">
+      <table id="wordsTable"><thead><tr><th>start</th><th>end</th><th>word</th><th>conf</th></tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+
+  <p class="muted">
+    Powered by <a href="https://github.com/mudler/parakeet.cpp" target="_blank" rel="noopener">parakeet.cpp</a>
+    compiled to WebAssembly with <a href="https://github.com/ggml-org/ggml" target="_blank" rel="noopener">ggml</a>.
+    Runs on the CPU backend, single-threaded.
+  </p>
+</div>
+
+<script type="module">
+import { Parakeet } from './parakeet.js';
+
+const $ = (id) => document.getElementById(id);
+let pk = null;             // loaded Parakeet instance
+let audio = null;         // { pcm: Float32Array, sampleRate }
+
+function setStatus(el, msg, isErr = false) {
+  el.textContent = msg;
+  el.classList.toggle('err', isErr);
+}
+
+async function loadModel(source, label) {
+  setStatus($('modelStatus'), 'Loading model… (first load downloads + compiles the WASM)');
+  $('loadBtn').disabled = true;
+  try {
+    if (pk) { pk.free(); pk = null; }
+    const t0 = performance.now();
+    pk = await Parakeet.load('./dist/', source, {
+      printErr: (s) => console.warn(s),
+    });
+    const dt = ((performance.now() - t0) / 1000).toFixed(1);
+    setStatus($('modelStatus'), `Model loaded (${label}) in ${dt}s · ABI v${pk.abiVersion()}. Ready.`);
+    if (audio) $('transcribeBtn').disabled = false;
+  } catch (e) {
+    setStatus($('modelStatus'), 'Load failed: ' + e.message, true);
+    console.error(e);
+  } finally {
+    $('loadBtn').disabled = false;
+  }
+}
+
+$('loadBtn').addEventListener('click', () => {
+  const url = $('modelUrl').value.trim();
+  if (url) loadModel(url, url.split('/').pop());
+});
+
+// Drag & drop a local .gguf
+const modelDrop = $('modelDrop');
+;['dragover', 'dragenter'].forEach((ev) => modelDrop.addEventListener(ev, (e) => {
+  e.preventDefault(); modelDrop.classList.add('over');
+}));
+;['dragleave', 'drop'].forEach((ev) => modelDrop.addEventListener(ev, (e) => {
+  e.preventDefault(); modelDrop.classList.remove('over');
+}));
+modelDrop.addEventListener('drop', async (e) => {
+  const f = e.dataTransfer.files[0];
+  if (f) loadModel(new Uint8Array(await f.arrayBuffer()), f.name);
+});
+
+// Audio selection
+const audioDrop = $('audioDrop');
+const audioInput = $('audioInput');
+audioDrop.addEventListener('click', () => audioInput.click());
+;['dragover', 'dragenter'].forEach((ev) => audioDrop.addEventListener(ev, (e) => {
+  e.preventDefault(); audioDrop.classList.add('over');
+}));
+;['dragleave', 'drop'].forEach((ev) => audioDrop.addEventListener(ev, (e) => {
+  e.preventDefault(); audioDrop.classList.remove('over');
+}));
+audioDrop.addEventListener('drop', async (e) => {
+  const f = e.dataTransfer.files[0];
+  if (f) await pickAudio(f);
+});
+audioInput.addEventListener('change', () => { if (audioInput.files[0]) pickAudio(audioInput.files[0]); });
+
+async function pickAudio(file) {
+  setStatus($('audioStatus'), `Decoding ${file.name}…`);
+  try {
+    const buf = await file.arrayBuffer();
+    audio = await Parakeet.decodeAudio(buf, 16000);
+    const secs = (audio.pcm.length / audio.sampleRate).toFixed(2);
+    setStatus($('audioStatus'), `${file.name} · ${secs}s @ ${audio.sampleRate} Hz`);
+    audioDrop.firstChild.textContent = `${file.name} — ${secs}s`;
+    if (pk) $('transcribeBtn').disabled = false;
+  } catch (e) {
+    setStatus($('audioStatus'), 'Decode failed: ' + e.message, true);
+  }
+}
+
+$('transcribeBtn').addEventListener('click', () => {
+  if (!pk || !audio) return;
+  $('transcribeBtn').disabled = true;
+  setStatus($('audioStatus'), 'Transcribing…');
+  $('out').textContent = '';
+  $('wordsWrap').style.display = 'none';
+  // Defer so the UI can paint the "Transcribing…" state before the blocking call.
+  setTimeout(() => {
+    try {
+      const t0 = performance.now();
+      if ($('tsCheck').checked) {
+        const doc = pk.transcribeWithTimestamps(audio.pcm, audio.sampleRate);
+        $('out').textContent = doc.text;
+        const tb = $('wordsTable').querySelector('tbody');
+        tb.innerHTML = '';
+        for (const w of doc.words || []) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${w.start.toFixed(2)}</td><td>${w.end.toFixed(2)}</td><td>${w.w}</td><td>${w.conf.toFixed(2)}</td>`;
+          tb.appendChild(tr);
+        }
+        $('wordsWrap').style.display = (doc.words || []).length ? 'block' : 'none';
+      } else {
+        $('out').textContent = pk.transcribe(audio.pcm, audio.sampleRate);
+      }
+      const dt = ((performance.now() - t0) / 1000).toFixed(2);
+      const rtf = (audio.pcm.length / audio.sampleRate / (dt || 1)).toFixed(1);
+      setStatus($('audioStatus'), `Done in ${dt}s (${rtf}× real-time).`);
+    } catch (e) {
+      setStatus($('audioStatus'), 'Transcribe failed: ' + e.message, true);
+      console.error(e);
+    } finally {
+      $('transcribeBtn').disabled = false;
+    }
+  }, 30);
+});
+</script>
+</body>
+</html>
