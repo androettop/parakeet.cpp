@@ -19,9 +19,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${ROOT}/build-wasm"
-DIST_DIR="${ROOT}/examples/wasm/dist"
 THREADS="${PARAKEET_WASM_THREADS:-0}"
+# Single-threaded and threaded builds go to separate dirs/build trees so both
+# can coexist (the demos use one or the other).
+if [ "${THREADS}" != "0" ]; then
+    BUILD_DIR="${ROOT}/build-wasm-threaded"
+    DIST_DIR="${ROOT}/examples/wasm/dist-threaded"
+else
+    BUILD_DIR="${ROOT}/build-wasm"
+    DIST_DIR="${ROOT}/examples/wasm/dist"
+fi
 
 if ! command -v emcmake >/dev/null 2>&1; then
     echo "error: emcmake not found on PATH." >&2

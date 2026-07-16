@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>parakeet.cpp · live microphone (multi-thread)</title>
+<style>
+  :root { color-scheme: light dark; --accent: #16a34a; --rec: #ef4444; --bg: #0b0f14; --card: #131b24; --fg: #e6edf3; --muted: #8b98a5; --border: #223040; }
+  @media (prefers-color-scheme: light) { :root { --bg: #f6f8fa; --card: #fff; --fg: #1f2328; --muted: #656d76; --border: #d0d7de; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg); }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; } h1 .cpp { color: var(--accent); }
+  .badge { display:inline-block; font-size:.7rem; font-weight:700; background:var(--accent); color:#fff; border-radius:5px; padding:1px 7px; vertical-align:middle; margin-left:6px; }
+  p.sub { color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 18px; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  label.field { font-weight: 600; font-size: .85rem; color: var(--muted); display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
+  input[type=text] { width: 100%; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); font-size: 14px; }
+  button { border: 0; border-radius: 8px; padding: 10px 18px; font-size: 14px; font-weight: 600; cursor: pointer; color: #fff; background: var(--accent); }
+  button.rec { background: var(--rec); } button:disabled { opacity: .5; cursor: not-allowed; }
+  button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+  .status { font-size: .9rem; color: var(--muted); min-height: 1.4em; margin-top: 10px; }
+  .status.err { color: #f85149; }
+  #out { white-space: pre-wrap; word-break: break-word; font-size: 1.15rem; line-height: 1.7; min-height: 3em; }
+  #out:empty::before { content: "Your live transcript will appear here as you speak."; color: var(--muted); }
+  .eou { display: inline-block; font-size: .7rem; font-weight: 700; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 4px; margin: 0 4px; vertical-align: middle; }
+  .eou.eob { color: var(--muted); border-color: var(--muted); }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--rec); margin-right: 6px; animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .3 } }
+  .muted { color: var(--muted); font-size: .85rem; } a { color: var(--accent); }
+  code { background: color-mix(in srgb, var(--muted) 18%, transparent); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>parakeet<span class="cpp">.cpp</span> · live mic <span class="badge" id="thBadge">multi-thread</span></h1>
+  <p class="sub">Real-time transcription with a multi-core ggml pool running in a Web Worker: the mic capture and UI stay smooth on the main thread while the model decodes in parallel off-thread. Uses the cache-aware streaming model with end-of-utterance detection.</p>
+
+  <div class="card">
+    <label class="field" for="modelUrl">Streaming model (GGUF)</label>
+    <div class="row">
+      <input type="text" id="modelUrl" style="flex:1; min-width:240px"
+             value="https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/realtime_eou_120m-v1-q4_k.gguf" />
+      <button id="loadBtn">Load model</button>
+    </div>
+    <p class="muted" style="margin:8px 0 0">Must be a <b>streaming</b> model: <code>realtime_eou_120m-v1</code> (English) or a <code>nemotron-3.5-asr-streaming</code> model.</p>
+    <div class="status" id="modelStatus">Not loaded.</div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <button id="recBtn" disabled>🎤 Start speaking</button>
+      <button id="clearBtn" class="secondary">Clear</button>
+      <div style="flex:1"></div>
+      <span id="recDot" style="display:none"><span class="dot"></span><span class="muted">recording</span></span>
+    </div>
+    <div class="status" id="micStatus"></div>
+  </div>
+
+  <div class="card">
+    <label class="field">Transcript</label>
+    <div id="out"><span id="committed"></span></div>
+  </div>
+
+  <p class="muted">Powered by <a href="https://github.com/mudler/parakeet.cpp" target="_blank" rel="noopener">parakeet.cpp</a> (WebAssembly + pthreads). Needs cross-origin isolation (<code>serve.py</code> sets the headers) and mic access (localhost/HTTPS). <a href="./index-threaded.html">→ file demo (multi-thread)</a> · <a href="./mic.html">single-thread version</a></p>
+</div>
+
+<script type="module">
+import { ParakeetThreaded, Resampler } from './parakeet-threaded.js';
+
+const $ = (id) => document.getElementById(id);
+let pk = null, stream = null;
+let audioCtx = null, workletNode = null, mediaStream = null, srcNode = null, resampler = null;
+let queue = [], pumping = false, recording = false;
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const setStatus = (el, msg, err=false) => { el.textContent = msg; el.classList.toggle('err', err); };
+
+if (!crossOriginIsolated) {
+  setStatus($('modelStatus'), 'This page is not cross-origin isolated — SharedArrayBuffer is unavailable. Serve it with COOP/COEP headers (use serve.py).', true);
+}
+
+async function loadModel(source, label) {
+  setStatus($('modelStatus'), 'Loading model… (first load also compiles the WASM)');
+  $('loadBtn').disabled = true; $('recBtn').disabled = true;
+  try {
+    if (stream) { await stream.free(); stream = null; }
+    if (pk) { pk.terminate(); pk = null; }
+    const t0 = performance.now();
+    pk = await ParakeetThreaded.load('./', source);
+    // Verify it's a streaming model (open + close a probe session).
+    const probe = await pk.stream(); await probe.free();
+    const dt = ((performance.now() - t0) / 1000).toFixed(1);
+    $('thBadge').textContent = pk.threads + ' threads';
+    setStatus($('modelStatus'), `Model loaded (${label}) in ${dt}s · ${pk.threads} threads. Click “Start speaking”.`);
+    $('recBtn').disabled = false;
+  } catch (e) { setStatus($('modelStatus'), 'Load failed: ' + e.message, true); console.error(e); }
+  finally { $('loadBtn').disabled = false; }
+}
+$('loadBtn').addEventListener('click', () => { const u = $('modelUrl').value.trim(); if (u) loadModel(u, u.split('/').pop()); });
+
+const WORKLET_SRC = `
+class Cap extends AudioWorkletProcessor {
+  process(inputs) { const ch = inputs[0] && inputs[0][0]; if (ch && ch.length) this.port.postMessage(ch.slice(0)); return true; }
+}
+registerProcessor('cap', Cap);`;
+
+async function startRecording() {
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+  } catch (e) { setStatus($('micStatus'), 'Microphone access denied: ' + e.message, true); return; }
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  await audioCtx.resume();
+  const blobUrl = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'application/javascript' }));
+  await audioCtx.audioWorklet.addModule(blobUrl); URL.revokeObjectURL(blobUrl);
+
+  resampler = new Resampler(audioCtx.sampleRate, 16000);
+  queue = [];
+  stream = await pk.stream();
+
+  srcNode = audioCtx.createMediaStreamSource(mediaStream);
+  workletNode = new AudioWorkletNode(audioCtx, 'cap');
+  workletNode.port.onmessage = (ev) => { const r = resampler.process(ev.data); if (r.length) queue.push(r); };
+  srcNode.connect(workletNode);
+  const sink = audioCtx.createGain(); sink.gain.value = 0; workletNode.connect(sink); sink.connect(audioCtx.destination);
+
+  recording = true;
+  $('recBtn').textContent = '⏹ Stop'; $('recBtn').classList.add('rec'); $('recDot').style.display = 'inline';
+  setStatus($('micStatus'), `Listening @ ${audioCtx.sampleRate} Hz → 16 kHz, ${pk.threads} threads…`);
+  pump();
+}
+
+async function pump() {
+  if (pumping) return; pumping = true;
+  while (recording || queue.length) {
+    if (!queue.length) { await sleep(30); continue; }
+    const total = queue.reduce((n, a) => n + a.length, 0);
+    const buf = new Float32Array(total); let o = 0; for (const a of queue) { buf.set(a, o); o += a.length; }
+    queue = [];
+    try { applyResult(await stream.feed(buf)); }
+    catch (e) { setStatus($('micStatus'), 'Streaming error: ' + e.message, true); console.error(e); break; }
+  }
+  pumping = false;
+}
+
+function applyResult(r) {
+  if (r.text) $('committed').append(document.createTextNode(r.text));
+  for (const e of r.events || []) {
+    const span = document.createElement('span');
+    span.className = 'eou' + (e.type === 'eob' ? ' eob' : '');
+    span.textContent = e.type === 'eob' ? 'EOB' : 'EOU';
+    span.title = `${e.type} @ ${e.t.toFixed(2)}s`;
+    $('committed').append(span);
+  }
+  $('out').scrollIntoView({ block: 'end' });
+}
+
+async function stopRecording() {
+  recording = false; $('recBtn').disabled = true; setStatus($('micStatus'), 'Finishing…');
+  try {
+    if (srcNode) srcNode.disconnect();
+    if (workletNode) workletNode.disconnect();
+    if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+  } catch (_) {}
+  while (pumping) await sleep(20);
+  if (stream) { try { applyResult(await stream.finalize()); } catch (e) { console.error(e); } await stream.free(); stream = null; }
+  if (audioCtx) { await audioCtx.close(); audioCtx = null; }
+  $('recBtn').textContent = '🎤 Start speaking'; $('recBtn').classList.remove('rec'); $('recBtn').disabled = false; $('recDot').style.display = 'none';
+  setStatus($('micStatus'), 'Stopped.');
+}
+
+$('recBtn').addEventListener('click', () => { if (recording) stopRecording(); else startRecording(); });
+$('clearBtn').addEventListener('click', () => { $('committed').textContent = ''; });
+</script>
+</body>
+</html>

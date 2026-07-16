@@ -379,18 +379,22 @@ const doc  = pk.transcribeWithTimestamps(pcm, sampleRate); // + per-word timesta
 pk.free();
 ```
 
-There are two demo pages: **`index.html`** (drag-and-drop file transcription) and **`mic.html`** (live microphone transcription with the cache-aware streaming model). The prebuilt `dist/parakeet.mjs` + `parakeet.wasm` are committed, so you can just serve and open:
+The demos come in single-thread and multi-thread flavors (both prebuilt and committed, so you can just serve and open):
+
+- **`index.html`** / **`mic.html`** — single-thread: offline file transcription and live-microphone streaming. Run from any static host.
+- **`index-threaded.html`** / **`mic-threaded.html`** — multi-thread: the module runs in a Web Worker with a ggml pthread pool, so it uses multiple CPU cores *and* the browser UI never freezes. Needs cross-origin isolation (COOP/COEP), which `serve.py` provides.
 
 ```sh
-python3 examples/wasm/serve.py        # http://localhost:8000  -> open index.html or mic.html
+python3 examples/wasm/serve.py        # http://localhost:8000  -> open any of the demos
 ```
 
 To rebuild the WASM from source:
 
 ```sh
 git submodule update --init --recursive
-source /path/to/emsdk/emsdk_env.sh   # Emscripten SDK on PATH
-scripts/build_wasm.sh                 # -> examples/wasm/dist/parakeet.{mjs,wasm}
+source /path/to/emsdk/emsdk_env.sh            # Emscripten SDK on PATH
+scripts/build_wasm.sh                          # single-thread -> dist/
+PARAKEET_WASM_THREADS=4 scripts/build_wasm.sh  # multi-thread  -> dist-threaded/
 ```
 
 Everything (demo pages, JS API, build script) lives in [`examples/wasm/`](examples/wasm/README.md).

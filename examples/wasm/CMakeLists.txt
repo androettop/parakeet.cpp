@@ -43,6 +43,7 @@ set(PARAKEET_WASM_EXPORTS
     "_parakeet_capi_last_error"
     "_parakeet_capi_free_string"
     "_pk_wasm_transcribe_pcm_json"
+    "_pk_wasm_set_threads"
     "_pk_wasm_version"
     "_malloc"
     "_free")
@@ -57,9 +58,6 @@ target_link_options(parakeet-wasm PRIVATE
     "-sEXPORT_NAME=createParakeetModule"
     "-sEXPORTED_FUNCTIONS=[${PARAKEET_WASM_EXPORTS_JOINED}]"
     "-sEXPORTED_RUNTIME_METHODS=[${PARAKEET_WASM_RUNTIME_METHODS}]"
-    "-sALLOW_MEMORY_GROWTH=1"
-    "-sINITIAL_MEMORY=64MB"
-    "-sMAXIMUM_MEMORY=2GB"
     "-sSTACK_SIZE=1MB"
     "-sFORCE_FILESYSTEM=1"
     "-sENVIRONMENT=web,worker,node"
@@ -67,15 +65,34 @@ target_link_options(parakeet-wasm PRIVATE
     "-sALLOW_TABLE_GROWTH=1"
     "-O3")
 
-# Optional pthreads build: cache-aware ggml multithreading in the browser needs
-# SharedArrayBuffer (cross-origin isolation / COOP+COEP headers). Off by default
-# so the module runs from any static host and file://; enable with
+# Optional pthreads build. ggml multithreading in the browser needs
+# SharedArrayBuffer (cross-origin isolation / COOP+COEP headers), and the module
+# must run INSIDE a Web Worker — ggml's compute blocks the calling thread waiting
+# on its worker pool, and the browser main thread is forbidden from blocking
+# (Atomics.wait throws there), which is what froze the UI. Off by default so the
+# single-threaded module still runs from any static host and file://; enable with
 # -DPARAKEET_WASM_THREADS=<N>.
+#
+# IMPORTANT: the threaded build uses FIXED memory (no ALLOW_MEMORY_GROWTH).
+# -pthread + growable memory routes every heap access through a slow bounds-checked
+# path (Emscripten warns about it) and measured several times slower; a fixed
+# SharedArrayBuffer is required for fast threaded compute. Size it for the model
+# via -DPARAKEET_WASM_MEMORY_MB (default 1536, enough for the <=0.6B models).
 set(PARAKEET_WASM_THREADS "0" CACHE STRING
     "Emscripten pthread pool size for the wasm build (0 = single-threaded)")
-if(NOT PARAKEET_WASM_THREADS STREQUAL "0")
+set(PARAKEET_WASM_MEMORY_MB "1536" CACHE STRING
+    "Fixed wasm heap size (MB) for the threaded build")
+if(PARAKEET_WASM_THREADS STREQUAL "0")
+    # Single-threaded: growable heap, runs anywhere.
+    target_link_options(parakeet-wasm PRIVATE
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-sINITIAL_MEMORY=64MB"
+        "-sMAXIMUM_MEMORY=2GB")
+else()
+    # Threaded: fixed heap (SharedArrayBuffer) + pre-spawned worker pool.
     target_compile_options(parakeet-wasm PRIVATE "-pthread")
     target_link_options(parakeet-wasm PRIVATE
         "-pthread"
-        "-sPTHREAD_POOL_SIZE=${PARAKEET_WASM_THREADS}")
+        "-sPTHREAD_POOL_SIZE=${PARAKEET_WASM_THREADS}"
+        "-sINITIAL_MEMORY=${PARAKEET_WASM_MEMORY_MB}MB")
 endif()

@@ -28,6 +28,11 @@
 #define PK_WASM_EXPORT
 #endif
 
+// C++-linkage declaration of the thread-count override in libparakeet
+// (src/ggml_graph.cpp). Declared OUTSIDE extern "C" so it resolves to the
+// mangled pk::set_num_threads symbol.
+namespace pk { void set_num_threads(int n); }
+
 extern "C" {
 
 // Transcribe one in-memory 16 kHz (or arbitrary — it is resampled) mono float
@@ -74,6 +79,14 @@ char* pk_wasm_transcribe_pcm_json(parakeet_ctx* ctx, const float* samples,
     }
     return arr;  // fall back to the raw array document
 }
+
+// Set the ggml compute thread count for every subsequent graph computation
+// (encoder is the bulk). In the pthreads build the JS side pins this to the
+// PTHREAD_POOL_SIZE so ggml never tries to spawn a worker on demand (which would
+// deadlock the module's blocked worker thread). No-op-safe on the
+// single-threaded build (ggml just runs on one thread regardless).
+PK_WASM_EXPORT
+void pk_wasm_set_threads(int n) { pk::set_num_threads(n); }
 
 // The parakeet.cpp version string (e.g. "0.0.1"). malloc'd; free with
 // parakeet_capi_free_string.

@@ -10,15 +10,36 @@ pair plus a thin JS wrapper you can drop into any page.
 
 ```
 examples/wasm/
-├── parakeet_wasm.cpp   # C glue over the flat C-API (include/parakeet_capi.h)
-├── CMakeLists.txt      # the Emscripten target (parakeet.mjs + parakeet.wasm)
-├── parakeet.js         # hand-written JS API wrapper (Parakeet + streaming)
-├── index.html          # drag-and-drop file demo (offline transcription)
-├── mic.html            # LIVE microphone demo (cache-aware streaming)
-├── serve.py            # dev static server (correct MIME + COOP/COEP headers)
-├── test_node.mjs       # Node smoke test
-└── dist/               # build output (git-ignored): parakeet.mjs + parakeet.wasm
+├── parakeet_wasm.cpp        # C glue over the flat C-API (include/parakeet_capi.h)
+├── CMakeLists.txt           # the Emscripten target (parakeet.mjs + parakeet.wasm)
+├── parakeet.js              # single-thread JS API (Parakeet + streaming, sync)
+│
+│   # single-thread demos (simplest; run from any static host):
+├── index.html               #   offline file transcription
+├── mic.html                 #   live microphone (cache-aware streaming)
+│
+│   # multi-thread demos (Web Worker + pthread pool; faster, UI never blocks):
+├── parakeet-worker.js       #   Web Worker hosting the threaded module
+├── parakeet-threaded.js     #   main-thread async API (ParakeetThreaded)
+├── index-threaded.html      #   offline file transcription, multi-core
+├── mic-threaded.html        #   live microphone, multi-core
+│
+├── serve.py                 # dev static server (MIME + COOP/COEP headers)
+├── test_node.mjs            # Node smoke test
+├── dist/                    # single-thread build output: parakeet.mjs + .wasm
+└── dist-threaded/           # multi-thread build output: parakeet.mjs + .wasm
 ```
+
+Two flavors are prebuilt and committed:
+
+- **Single-thread** (`dist/`, used by `index.html` / `mic.html`) — simplest,
+  runs from any static host and `file://`. The WASM compute runs on the calling
+  thread.
+- **Multi-thread** (`dist-threaded/`, used by `index-threaded.html` /
+  `mic-threaded.html`) — the module runs inside a **Web Worker** with a ggml
+  **pthread pool**, so it uses multiple CPU cores *and* the browser UI never
+  freezes (the compute is off the main thread). Needs a cross-origin-isolated
+  page (COOP/COEP headers — `serve.py` sends them) for `SharedArrayBuffer`.
 
 ## Build
 
@@ -147,30 +168,59 @@ node examples/wasm/test_node.mjs path/to/model.gguf path/to/audio.wav
 
 ## Performance & threading
 
-The default build is **single-threaded**, which is both the most compatible
-(runs from any static host and from `file://`, no special headers) and, in
-practice here, the fastest. On the small 110M model transcription runs faster
-than real time on a modern laptop (~1.3× real-time in a headless Chromium
-measurement on this repo's `speech.wav`).
+Two builds are provided:
 
-An experimental pthreads build is wired in behind `PARAKEET_WASM_THREADS=N`:
+- **Single-thread** (`dist/`, `scripts/build_wasm.sh`) — growable heap, runs
+  anywhere including `file://`, no special headers. Compute runs on the calling
+  thread; if you call it on the browser main thread the UI blocks while it runs.
+- **Multi-thread** (`dist-threaded/`, `PARAKEET_WASM_THREADS=N scripts/build_wasm.sh`)
+  — a ggml pthread pool over a **fixed** `SharedArrayBuffer` heap, meant to run
+  **inside a Web Worker**. This is what the `*-threaded.html` demos use, and it
+  is both faster (multi-core) and keeps the UI responsive.
 
 ```sh
-PARAKEET_WASM_THREADS=8 scripts/build_wasm.sh
+scripts/build_wasm.sh                         # single-thread -> dist/
+PARAKEET_WASM_THREADS=4 scripts/build_wasm.sh # multi-thread  -> dist-threaded/
 ```
 
-It is **not currently recommended** — Emscripten's `-pthread` combined with
-`ALLOW_MEMORY_GROWTH` routes heap access through a slower path, and for
-parakeet's many small graph computes that overhead outweighed the parallelism
-in testing (it came out several times *slower* than single-threaded). Making it
-a real win needs a fixed (non-growable) memory build, which trades off support
-for the larger models. If you do use it, pthreads need `SharedArrayBuffer`,
-which the browser only exposes on **cross-origin isolated** pages — serve with
-the COOP/COEP headers (the included `serve.py` already sends them):
+Two things are essential for the threaded build and are handled here:
+
+1. **Run it in a Web Worker.** ggml's `compute` blocks the thread it runs on
+   while its pool works, and the browser main thread is forbidden from blocking
+   (`Atomics.wait` throws there) — that is exactly what froze the UI. The module
+   runs in `parakeet-worker.js`, so the blocking happens off the main thread.
+2. **Fixed memory, not growable.** `-pthread` + `ALLOW_MEMORY_GROWTH` routes
+   every heap access through a slow bounds-checked path (Emscripten warns), which
+   made an early threaded build several times *slower*. The threaded build uses a
+   fixed heap (`-DPARAKEET_WASM_MEMORY_MB`, default 1536, enough for the ≤0.6B
+   models); ggml is pinned to the pre-spawned pool size so it never tries to
+   spawn a worker on demand (which would deadlock the blocked worker thread).
+
+pthreads need `SharedArrayBuffer`, exposed only on **cross-origin isolated**
+pages — serve with the COOP/COEP headers (`serve.py` already sends them):
 
 ```
 Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp
+```
+
+### Multi-thread JS API
+
+Same shape as the single-thread API but async (everything crosses to the
+worker), and with an explicit `terminate()`:
+
+```js
+import { ParakeetThreaded } from './parakeet-threaded.js';
+
+const pk = await ParakeetThreaded.load('./', modelUrl);   // opts.threads caps the pool
+const text = await pk.transcribe(pcm, sampleRate);        // offline
+const doc  = await pk.transcribeWithTimestamps(pcm, sampleRate);
+
+const st = await pk.stream();                             // realtime (streaming model)
+const r  = await st.feed(pcm16k);   // { text, events, words, ... }
+await st.finalize(); await st.free();
+
+pk.terminate();
 ```
 
 ## Notes / limitations
