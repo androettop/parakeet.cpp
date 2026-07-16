@@ -12,8 +12,9 @@ pair plus a thin JS wrapper you can drop into any page.
 examples/wasm/
 ├── parakeet_wasm.cpp   # C glue over the flat C-API (include/parakeet_capi.h)
 ├── CMakeLists.txt      # the Emscripten target (parakeet.mjs + parakeet.wasm)
-├── parakeet.js         # hand-written JS API wrapper (the Parakeet class)
-├── index.html          # drag-and-drop demo page
+├── parakeet.js         # hand-written JS API wrapper (Parakeet + streaming)
+├── index.html          # drag-and-drop file demo (offline transcription)
+├── mic.html            # LIVE microphone demo (cache-aware streaming)
 ├── serve.py            # dev static server (correct MIME + COOP/COEP headers)
 ├── test_node.mjs       # Node smoke test
 └── dist/               # build output (git-ignored): parakeet.mjs + parakeet.wasm
@@ -39,16 +40,30 @@ scripts/build_wasm.sh
 This produces `examples/wasm/dist/parakeet.mjs` and `parakeet.wasm`
 (~1 MB wasm; the model is downloaded separately at runtime).
 
-## Try the demo
+The prebuilt `dist/parakeet.mjs` + `dist/parakeet.wasm` are **committed to the
+repo**, so you can try the demos without installing Emscripten — just serve the
+folder (see below). Rebuild them with `scripts/build_wasm.sh` when you change
+the C++.
+
+## Try the demos
 
 ```sh
 python3 examples/wasm/serve.py           # http://localhost:8000
 ```
 
-Open the page, click **Load model** (defaults to the ~125 MB
-`tdt_ctc-110m-q4_k` English model on HuggingFace, or drop your own `.gguf`),
-drop in an audio file, and hit **Transcribe**. Everything runs locally in the
-tab.
+Then open one of:
+
+- **`index.html`** — offline file transcription. Click **Load model** (defaults
+  to the ~125 MB `tdt_ctc-110m-q4_k` English model on HuggingFace, or drop your
+  own `.gguf`), drop in an audio file, and hit **Transcribe**.
+- **`mic.html`** — **live microphone** transcription. Click **Load model**
+  (defaults to the streaming `realtime_eou_120m-v1` model), then **Start
+  speaking** and watch the transcript build up in real time, with `EOU` /`EOB`
+  markers where the model detects end-of-utterance / backchannel.
+
+Everything runs locally in the tab; audio and model never leave the page. The
+microphone demo needs `localhost` or HTTPS (a browser requirement for mic
+access) — `serve.py` on `localhost` satisfies it.
 
 ## JavaScript API
 
@@ -79,6 +94,36 @@ pk.free();  // release the model when done
 `pcm` is mono `Float32Array` in `[-1, 1]`. Any sample rate is accepted and
 linearly resampled to 16 kHz inside the library, so you can pass the raw output
 of `AudioContext.decodeAudioData` directly.
+
+### Live streaming (microphone)
+
+With a **streaming** model (`realtime_eou_120m-v1`, or a nemotron streaming
+model) you can feed audio as it arrives and get incremental text plus
+end-of-utterance events:
+
+```js
+import { Parakeet, Resampler } from './parakeet.js';
+
+const pk = await Parakeet.load('./dist/',
+  'https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/realtime_eou_120m-v1-q4_k.gguf');
+
+const stream = pk.stream();                 // begin a streaming session
+const resampler = new Resampler(micRate, 16000); // e.g. 48000 -> 16000
+
+// For each block of mic PCM (mono Float32Array at the mic's sample rate):
+const r = stream.feed(resampler.process(block));
+//   r = { text, eou, eob, frame_sec, events: [{type,frame,t}], words: [...] }
+if (r.text) appendToTranscript(r.text);
+for (const e of r.events) mark(e.type /* "eou" | "eob" */, e.t);
+
+// When the audio ends, flush the tail:
+const tail = stream.finalize();
+stream.free();
+```
+
+`stream.feed()` expects **16 kHz** mono PCM (unlike the offline calls it does
+not resample), which is exactly what the included `Resampler` produces from
+arbitrary mic rates. See `mic.html` for the full AudioWorklet capture pipeline.
 
 ### Model input
 
@@ -135,7 +180,6 @@ Cross-Origin-Embedder-Policy: require-corp
 - **Memory.** The model is held in WASM memory (growable up to 2 GB). The 110M
   and 0.6B models are comfortable; the 1.1B models need a browser/tab with
   enough memory.
-- **Streaming** (cache-aware EOU / nemotron streaming) C-API entry points are
-  compiled in and exported, but the JS wrapper currently ships the offline
-  `transcribe` / `transcribeWithTimestamps` surface. The streaming functions
-  (`parakeet_capi_stream_*`) can be `ccall`'d directly from JS.
+- **Streaming** (cache-aware EOU / nemotron streaming) is exposed via
+  `pk.stream()` / `ParakeetStream` and demonstrated in `mic.html`. It needs a
+  streaming model; offline models throw from `pk.stream()`.

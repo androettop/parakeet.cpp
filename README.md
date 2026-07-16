@@ -379,16 +379,21 @@ const doc  = pk.transcribeWithTimestamps(pcm, sampleRate); // + per-word timesta
 pk.free();
 ```
 
-Build it and try the drag-and-drop demo:
+There are two demo pages: **`index.html`** (drag-and-drop file transcription) and **`mic.html`** (live microphone transcription with the cache-aware streaming model). The prebuilt `dist/parakeet.mjs` + `parakeet.wasm` are committed, so you can just serve and open:
+
+```sh
+python3 examples/wasm/serve.py        # http://localhost:8000  -> open index.html or mic.html
+```
+
+To rebuild the WASM from source:
 
 ```sh
 git submodule update --init --recursive
 source /path/to/emsdk/emsdk_env.sh   # Emscripten SDK on PATH
 scripts/build_wasm.sh                 # -> examples/wasm/dist/parakeet.{mjs,wasm}
-python3 examples/wasm/serve.py        # http://localhost:8000
 ```
 
-Everything (model, demo page, JS API, build script) lives in [`examples/wasm/`](examples/wasm/README.md).
+Everything (demo pages, JS API, build script) lives in [`examples/wasm/`](examples/wasm/README.md).
 
 ---
 

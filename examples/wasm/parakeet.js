@@ -167,6 +167,23 @@ export class Parakeet {
     }
   }
 
+  // Begin a cache-aware streaming session for live transcription. Requires a
+  // streaming model (e.g. parakeet_realtime_eou_120m-v1, or a nemotron
+  // streaming model). Returns a ParakeetStream. `opts.lang` picks the language
+  // prompt for multilingual streaming models. Throws if the model is not a
+  // streaming model.
+  stream(opts = {}) {
+    this._assertLive();
+    const lang = opts.lang ?? '';
+    const s = this._m.ccall('parakeet_capi_stream_begin_lang', 'number',
+                            ['number', 'string'], [this._ctx, lang]);
+    if (!s) {
+      throw new Error('parakeet: could not begin streaming (not a streaming model?): ' +
+                      this._lastError());
+    }
+    return new ParakeetStream(this._m, s);
+  }
+
   // The parakeet.cpp C-API ABI version compiled into this module.
   abiVersion() {
     return this._m.ccall('parakeet_capi_abi_version', 'number', [], []);
@@ -208,6 +225,107 @@ export class Parakeet {
     }
     if (ch > 1) for (let i = 0; i < n; i++) mono[i] /= ch;
     return { pcm: mono, sampleRate: buf.sampleRate };
+  }
+}
+
+// A live cache-aware streaming session. Feed 16 kHz mono float PCM as it
+// arrives; each feed returns the text finalized since the last feed plus any
+// end-of-utterance (<EOU>) / backchannel (<EOB>) events and per-word timestamps.
+// Create via Parakeet#stream(). Feed order matters — the session carries encoder
+// and decoder state across calls.
+export class ParakeetStream {
+  constructor(module, streamPtr) {
+    this._m = module;
+    this._s = streamPtr;
+    this._freed = false;
+  }
+
+  _pushPcm(pcm) {
+    const f32 = pcm instanceof Float32Array ? pcm : Float32Array.from(pcm);
+    const ptr = this._m._malloc((f32.length * 4) || 4);
+    this._m.HEAPF32.set(f32, ptr >>> 2);
+    return [ptr, f32.length];
+  }
+
+  _takeJson(ptr) {
+    if (!ptr) throw new Error('parakeet: streaming call failed');
+    const s = this._m.UTF8ToString(ptr);
+    this._m.ccall('parakeet_capi_free_string', null, ['number'], [ptr]);
+    return JSON.parse(s);
+  }
+
+  // Feed a block of 16 kHz MONO float PCM. Returns
+  //   { text, eou, eob, frame_sec, events: [{type,frame,t}], words: [{w,start,end,conf}] }
+  // where `text` is the newly-finalized text since the last feed ("" if none),
+  // `eou`/`eob` are 1 when that event fired during this feed.
+  feed(pcm16k) {
+    if (this._freed) throw new Error('parakeet: stream already freed');
+    const [ptr, n] = this._pushPcm(pcm16k);
+    try {
+      const out = this._m.ccall('parakeet_capi_stream_feed_json', 'number',
+                                ['number', 'number', 'number'], [this._s, ptr, n]);
+      return this._takeJson(out);
+    } finally {
+      this._m._free(ptr);
+    }
+  }
+
+  // Flush the end-of-stream tail. Returns the same shape as feed(); call once
+  // when the audio ends. The running transcript is complete afterwards.
+  finalize() {
+    if (this._freed) throw new Error('parakeet: stream already freed');
+    const out = this._m.ccall('parakeet_capi_stream_finalize_json', 'number',
+                              ['number'], [this._s]);
+    return this._takeJson(out);
+  }
+
+  // Release the streaming session.
+  free() {
+    if (this._freed) return;
+    this._m.ccall('parakeet_capi_stream_free', null, ['number'], [this._s]);
+    this._s = 0;
+    this._freed = true;
+  }
+}
+
+// Continuous linear resampler: converts a stream of float PCM blocks from
+// `inRate` to `outRate` (default 16 kHz), preserving the fractional read
+// position across blocks so there are no clicks at block boundaries. Use it to
+// turn microphone audio (typically 44.1/48 kHz) into the 16 kHz mono the
+// streaming model expects.
+export class Resampler {
+  constructor(inRate, outRate = 16000) {
+    this.ratio = outRate / inRate;      // output samples per input sample
+    this._tail = 0;                     // last sample of the previous block
+    this._havePrev = false;
+    this._pos = 0;                      // fractional position within the input stream
+  }
+
+  // Feed one mono Float32Array block; returns a Float32Array of ~block*ratio
+  // resampled samples (16 kHz).
+  process(block) {
+    if (this.ratio === 1) return block.slice();
+    const out = [];
+    // Reconstruct a virtual input array [prevTail, ...block] so `_pos` (relative
+    // to prevTail at index 0) can interpolate across the boundary.
+    const prev = this._havePrev ? this._tail : (block.length ? block[0] : 0);
+    let pos = this._pos;                 // in units of input samples, 0 == prev
+    const N = block.length;
+    const sampleAt = (idx) => (idx <= 0 ? prev : (idx - 1 < N ? block[idx - 1] : block[N - 1]));
+    // Emit while the right neighbor is available (idx+1 <= N).
+    while (pos + 1 <= N) {
+      const i0 = Math.floor(pos);
+      const frac = pos - i0;
+      const a = sampleAt(i0);
+      const b = sampleAt(i0 + 1);
+      out.push(a + (b - a) * frac);
+      pos += 1 / this.ratio;
+    }
+    // Carry the remainder into the next block: shift the origin to the block end.
+    this._pos = pos - N;
+    this._tail = N ? block[N - 1] : prev;
+    this._havePrev = true;
+    return Float32Array.from(out);
   }
 }
 
