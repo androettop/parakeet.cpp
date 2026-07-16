@@ -45,6 +45,17 @@
       <button id="loadBtn">Load model</button>
     </div>
     <p class="muted" style="margin:8px 0 0">Must be a <b>streaming</b> model: <code>realtime_eou_120m-v1</code> (English) or a <code>nemotron-3.5-asr-streaming</code> model.</p>
+    <div class="row" style="margin-top:12px">
+      <label class="field" for="threadSel" style="margin:0">Threads</label>
+      <select id="threadSel" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--fg)">
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="4" selected>4</option>
+        <option value="6">6</option>
+        <option value="8">8</option>
+      </select>
+      <span class="muted">applies live · more than your physical cores is usually slower</span>
+    </div>
     <div class="status" id="modelStatus">Not loaded.</div>
   </div>
 
@@ -87,7 +98,7 @@ async function loadModel(source, label) {
     if (stream) { await stream.free(); stream = null; }
     if (pk) { pk.terminate(); pk = null; }
     const t0 = performance.now();
-    pk = await ParakeetThreaded.load('./', source);
+    pk = await ParakeetThreaded.load('./', source, { threads: parseInt($('threadSel').value) || 4 });
     // Verify it's a streaming model (open + close a probe session).
     const probe = await pk.stream(); await probe.free();
     const dt = ((performance.now() - t0) / 1000).toFixed(1);
@@ -98,6 +109,14 @@ async function loadModel(source, label) {
   finally { $('loadBtn').disabled = false; }
 }
 $('loadBtn').addEventListener('click', () => { const u = $('modelUrl').value.trim(); if (u) loadModel(u, u.split('/').pop()); });
+
+$('threadSel').addEventListener('change', async () => {
+  const n = parseInt($('threadSel').value) || 4;
+  if (!pk) return;
+  await pk.setThreads(n);
+  $('thBadge').textContent = pk.threads + ' threads';
+  setStatus($('modelStatus'), `Now using ${pk.threads} threads.`);
+});
 
 const WORKLET_SRC = `
 class Cap extends AudioWorkletProcessor {

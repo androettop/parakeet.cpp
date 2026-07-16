@@ -196,6 +196,16 @@ Two things are essential for the threaded build and are handled here:
    models); ggml is pinned to the pre-spawned pool size so it never tries to
    spawn a worker on demand (which would deadlock the blocked worker thread).
 
+**Pick a thread count that matches your PHYSICAL cores.** ggml spin-waits
+between graph nodes, so oversubscribing (more threads than physical cores) is
+badly slower, not just flat — e.g. 8 threads on a 4-core machine measured ~7×
+slower than 4 threads. `navigator.hardwareConcurrency` reports *logical* cores
+(hyperthreads), so the auto default can overshoot; the `*-threaded.html` demos
+expose a **Threads** selector (applies live via `ParakeetThreaded#setThreads`)
+so you can find the sweet spot on your machine. The build pre-spawns a pool of 8
+(`PARAKEET_WASM_THREADS`), and the JS caps requests to that — asking for more
+than the pool would deadlock.
+
 pthreads need `SharedArrayBuffer`, exposed only on **cross-origin isolated**
 pages — serve with the COOP/COEP headers (`serve.py` already sends them):
 

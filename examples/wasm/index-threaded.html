@@ -58,6 +58,17 @@
     </div>
     <p class="muted" style="margin:8px 0 0">Default: <code>tdt_ctc-110m-q4_k</code> English (~125 MB). Or drop a local <code>.gguf</code>.</p>
     <div class="drop" id="modelDrop" style="margin-top:12px">Drop a .gguf file</div>
+    <div class="row" style="margin-top:12px">
+      <label class="field" for="threadSel" style="margin:0">Threads</label>
+      <select id="threadSel" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--fg)">
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="4" selected>4</option>
+        <option value="6">6</option>
+        <option value="8">8</option>
+      </select>
+      <span class="muted">applies live · more than your physical cores is usually slower</span>
+    </div>
     <div class="status" id="modelStatus">Not loaded.</div>
   </div>
 
@@ -100,7 +111,7 @@ async function loadModel(source, label) {
   try {
     if (pk) { pk.terminate(); pk = null; }
     const t0 = performance.now();
-    pk = await ParakeetThreaded.load('./', source);
+    pk = await ParakeetThreaded.load('./', source, { threads: parseInt($('threadSel').value) || 4 });
     const dt = ((performance.now() - t0) / 1000).toFixed(1);
     $('thBadge').textContent = pk.threads + ' threads';
     setStatus($('modelStatus'), `Model loaded (${label}) in ${dt}s · ${pk.threads} threads · ABI v${pk.abi}. Ready.`);
@@ -109,6 +120,15 @@ async function loadModel(source, label) {
   finally { $('loadBtn').disabled = false; }
 }
 $('loadBtn').addEventListener('click', () => { const u = $('modelUrl').value.trim(); if (u) loadModel(u, u.split('/').pop()); });
+
+// Live thread-count change (no model reload).
+$('threadSel').addEventListener('change', async () => {
+  const n = parseInt($('threadSel').value) || 4;
+  if (!pk) return;
+  await pk.setThreads(n);
+  $('thBadge').textContent = pk.threads + ' threads';
+  setStatus($('modelStatus'), `Now using ${pk.threads} threads.`);
+});
 
 const modelDrop = $('modelDrop');
 ;['dragover','dragenter'].forEach(ev => modelDrop.addEventListener(ev, e => { e.preventDefault(); modelDrop.classList.add('over'); }));

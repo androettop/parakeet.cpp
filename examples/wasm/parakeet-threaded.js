@@ -22,6 +22,13 @@ export { Resampler } from './parakeet.js';  // reuse the same streaming resample
 
 export const Decoder = Object.freeze({ DEFAULT: 0, CTC: 1, TDT: 2 });
 
+// MUST equal the threaded build's PTHREAD_POOL_SIZE (PARAKEET_WASM_THREADS).
+// ggml is pinned to at most this many threads; requesting more than the
+// pre-spawned pool would make it spawn a worker on demand from the blocked
+// worker thread, which DEADLOCKS (the symptom is transcription that never
+// finishes). Keep this in sync with scripts/build_wasm.sh's default.
+const MAX_THREADS = 8;
+
 // Turn a Float32Array into a transferable ArrayBuffer (copy so the caller keeps
 // its data), for zero-copy postMessage into the worker.
 function toTransfer(pcm) {
@@ -75,7 +82,10 @@ export class ParakeetThreaded {
     const worker = new Worker(workerUrl, { type: 'module' });
     const rpc = new Rpc(worker);
 
-    const threads = opts.threads || Math.min(navigator.hardwareConcurrency || 4, 8);
+    // Never request more than the pre-spawned pool (see MAX_THREADS) — doing so
+    // deadlocks. Default to the machine's core count, capped to the pool.
+    const want = opts.threads || navigator.hardwareConcurrency || 4;
+    const threads = Math.max(1, Math.min(want, MAX_THREADS));
     let payload, transfer;
     if (typeof model === 'string') {
       payload = { modelUrl: new URL(model, document.baseURI).href, threads };
@@ -109,6 +119,17 @@ export class ParakeetThreaded {
   async stream(opts = {}) {
     const { sid } = await this._rpc.call('stream-begin', { lang: opts.lang ?? '' });
     return new ParakeetThreadedStream(this._rpc, sid);
+  }
+
+  // Change the ggml thread count live (no model reload). Capped to the pool
+  // (MAX_THREADS) — asking for more than the pre-spawned pool deadlocks. Note
+  // that using more threads than the machine's PHYSICAL cores usually makes it
+  // slower (ggml spin-waits), so more is not always better.
+  async setThreads(n) {
+    const t = Math.max(1, Math.min(n | 0, MAX_THREADS));
+    const r = await this._rpc.call('set-threads', { threads: t });
+    this.threads = r.threads;
+    return this.threads;
   }
 
   // Tear down the worker (and its pthread pool).

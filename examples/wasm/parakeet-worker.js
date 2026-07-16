@@ -63,6 +63,12 @@ self.onmessage = async (e) => {
         reply(id, { abi: m.ccall('parakeet_capi_abi_version', 'number', [], []), threads });
         break;
       }
+      case 'set-threads': {
+        const n = Math.max(1, e.data.threads | 0);
+        m.ccall('pk_wasm_set_threads', null, ['number'], [n]);
+        reply(id, { threads: n });
+        break;
+      }
       case 'transcribe': {
         const pcm = new Float32Array(e.data.pcm);
         const ptr = pushPcm(pcm);
